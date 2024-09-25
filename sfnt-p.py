@@ -120,6 +120,7 @@ class DirectoryWidget(QScrollArea):
         data = self.p.parse_name(table)
         dialog = QDialog()
         dialog.setWindowTitle("'name' table")
+        dialog.setFixedSize(600, 400)
         table = QTableWidget()
         table.setRowCount(len(data))
         table.setColumnCount(5)
@@ -133,6 +134,15 @@ class DirectoryWidget(QScrollArea):
         dialog.setLayout(layout)
         dialog.exec()
 
+def get_platform_style():
+    p = sys.platform
+    n = "Courier"
+    if p == "nt":
+        n = "Consolas"
+    elif p == "darwin":
+        n = "Menlo"
+    return f"font-family: '{n}';"
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog='sfnt-p',
@@ -145,9 +155,7 @@ if __name__ == "__main__":
         app.setWindowIcon(QIcon.fromTheme(QIcon.ThemeIcon.Scanner))
         widget = DirectoryWidget(filename)
         widget.setWindowTitle("SFNT Proofer")
-        widget.setFixedSize(400, 400)
-        font = QFont("monospace")
-        font.setStyleHint(QFont.TypeWriter)
-        widget.setFont(font)
+        widget.setFixedSize(450, 400)
+        widget.setStyleSheet(get_platform_style())
         widget.show()
         sys.exit(app.exec())
