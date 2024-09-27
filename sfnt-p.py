@@ -8,7 +8,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QPushButton, QLabel, QWidget,
     QVBoxLayout, QHBoxLayout, QGroupBox, QScrollArea,
-    QDialog, QTableWidget, QTableWidgetItem, QSizePolicy, QLayout
+    QDialog, QTableWidget, QTableWidgetItem, QListWidget, QListView
 )
 
 SFNT_MAGIC_1 = [0x4F54544F, 0x00010000]
@@ -95,6 +95,13 @@ class FileParser:
             script_tag, s_offset = struct.unpack_from(">4sH", data, s_list_offset + 2 + 6 * x)
             s_offset += s_list_offset
             default_lang_sys_offset, l_count = struct.unpack_from(">2H", data, s_offset)
+            if default_lang_sys_offset:
+                default_lang_sys_offset += s_offset
+                _, required, f_count = struct.unpack_from(">3H", data, default_lang_sys_offset)
+                feature = struct.unpack_from(f">{f_count}H", data, default_lang_sys_offset + 6)
+                default_lang_sys = feature
+            else:
+                default_lang_sys = None
             lang_sys = []
             for y in range(l_count):
                 lang_tag, lang_sys_offset = struct.unpack_from(">4sH", data, s_offset + 4 + 6 * y)
@@ -102,8 +109,13 @@ class FileParser:
                 _, required, f_count = struct.unpack_from(">3H", data, lang_sys_offset)
                 feature = struct.unpack_from(f">{f_count}H", data, lang_sys_offset + 6)
                 lang_sys.append((lang_tag.decode("u8"), required, feature))
-            s_list.append((script_tag.decode("u8"), lang_sys))
-        return s_list
+            s_list.append((script_tag.decode("u8"), default_lang_sys, lang_sys))
+        f_list = []
+        f_list_count = struct.unpack_from(">H", data, f_list_offset)[0]
+        for x in range(f_list_count):
+            feature_tag, _ = struct.unpack_from(">4sH", data, f_list_offset + 2 + 6 * x)
+            f_list.append(feature_tag.decode("u8"))
+        return s_list, f_list
 
 class DirectoryWidget(QScrollArea):
     def __init__(self, filename, *args, **kwargs):
@@ -196,15 +208,32 @@ class DirectoryWidget(QScrollArea):
         scroll.setFixedSize(600, 400)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll.setWidgetResizable(True)
-        layout = QVBoxLayout(scroll)
-        for s in data:
-            s_tag = s[0]
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        f_count = len(data[1])
+        for s in data[0]:
+            s_tag, s_dflt, s_list = s
             group = QGroupBox(s_tag)
             layout.addWidget(group)
-            if s[1]:
-                lang_layout = QVBoxLayout(group)
-                for l in s[1]:
-                    lang_layout.addWidget(QLabel(l[0]))
+            lang_layout = QVBoxLayout(group)
+            if s_dflt:
+                lang_layout.addWidget(QLabel("DFLT"))
+                tag_widget = QListWidget()
+                tag_widget.setFlow(QListView.LeftToRight)
+                for l in s_dflt:
+                    if l < f_count:
+                        tag_widget.addItem("%s" % data[1][l])
+                lang_layout.addWidget(tag_widget)
+            if s_list:
+                for l_tag, _, l_list in s_list:
+                    lang_layout.addWidget(QLabel(l_tag))
+                    tag_widget = QListWidget()
+                    tag_widget.setFlow(QListView.LeftToRight)
+                    for l in l_list:
+                        if l < f_count:
+                            tag_widget.addItem("%s" % data[1][l])
+                    lang_layout.addWidget(tag_widget)
+        scroll.setWidget(widget)
         dialog.exec()
 
 def get_platform_style():
@@ -214,7 +243,7 @@ def get_platform_style():
         n = "Consolas"
     elif p == "darwin":
         n = "Menlo"
-    return f"font-family: '{n}';"
+    return "* {font-family: '%s';}" % n
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -226,9 +255,9 @@ if __name__ == "__main__":
     if (filename := args.filename) and os.path.isfile(filename):
         app = QApplication()
         app.setWindowIcon(QIcon.fromTheme(QIcon.ThemeIcon.Scanner))
+        app.setStyleSheet(get_platform_style())
         widget = DirectoryWidget(filename)
         widget.setWindowTitle("SFNT Proofer")
         widget.setFixedSize(450, 400)
-        widget.setStyleSheet(get_platform_style())
         widget.show()
         sys.exit(app.exec())
