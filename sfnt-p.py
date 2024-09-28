@@ -2,13 +2,17 @@
 import os, sys, argparse
 import struct
 from collections import namedtuple
+from PySide6.QtCore import (
+    QSize
+)
 from PySide6.QtGui import (
-    QFont, QIcon, Qt
+    QFont, QIcon, Qt, QColor
 )
 from PySide6.QtWidgets import (
     QApplication, QPushButton, QLabel, QWidget,
     QVBoxLayout, QHBoxLayout, QGroupBox, QScrollArea,
-    QDialog, QTableWidget, QTableWidgetItem, QListWidget, QListView
+    QDialog, QTableWidget, QTableWidgetItem, QListWidget, QListWidgetItem,
+    QListView, QMessageBox
 )
 
 SFNT_MAGIC_1 = [0x4F54544F, 0x00010000]
@@ -26,6 +30,19 @@ name_entry = namedtuple("name_entry", [
     "platform_id", "encoding_id", "language_id",
     "name_id", "string"
 ])
+xhea_table = namedtuple("xhea_table", [
+    "ascender", "descender", "line_gap", "advance_width_max",
+    "min_left_side_bearing", "min_right_side_bearing", "x_max_extent",
+    "caret_slope_rise", "caret_slope_run", "caret_offset",
+    "metric_data_format", "number_of_h_metrics"
+])
+xhea_translation = {
+    "_width_": "_height_",
+    "_left_": "_top_",
+    "_right_": "_bottom_",
+    "_h_": "_v_",
+    "x_max_": "y_max_",
+}
 
 class FileParser:
     font_list = []
@@ -59,6 +76,11 @@ class FileParser:
 
     def seg(self, data, start, length):
         return data[start:start+length]
+
+    def parse_xhea(self, table):
+        data = self.seg(self.data, table[2], table[3])
+        vars = struct.unpack_from(">2H3hH3h3h8xhH", data, 0)
+        return xhea_table._make(vars[2:])
 
     def parse_name(self, table):
         data = self.seg(self.data, table[2], table[3])
@@ -150,20 +172,28 @@ class DirectoryWidget(QScrollArea):
         o = "%10d" % one[2]
         l = "%10d" % one[3]
         label = QLabel(f"{t}, {c}, {o}, {l}")
-        if t in ["head", "name", "GPOS", "GSUB"]:
-            h = QHBoxLayout()
-            h.addWidget(label)
-            b = QPushButton("show")
-            h.addWidget(b)
-            if t == "name":
-                b.clicked.connect(lambda checked=False, table=one: self.show_name(table))
-            elif t == "head":
-                b.clicked.connect(lambda checked=False, table=one: self.show_head(table))
-            elif t in ["GPOS", "GSUB"]:
-                b.clicked.connect(lambda checked=False, table=one: self.show_gsub_gpos(table))
-            layout.addLayout(h)
+        h = QHBoxLayout()
+        h.addWidget(label)
+        b = QPushButton("show")
+        h.addWidget(b)
+        if t == "name":
+            b.clicked.connect(lambda checked, table=one: self.show_name(table))
+        elif t == "head":
+            b.clicked.connect(lambda checked, table=one: self.show_head(table))
+        elif t in ["GPOS", "GSUB"]:
+            b.clicked.connect(lambda checked, table=one: self.show_gsub_gpos(table))
+        elif t in ["hhea", "vhea"]:
+            b.clicked.connect(lambda checked, table=one: self.show_xhea(table))
         else:
-            layout.addWidget(label)
+            b.clicked.connect(lambda checked, table=one: self.show_not_implemented_message(table))
+        layout.addLayout(h)
+
+    def show_not_implemented_message(self, table):
+        message_box = QMessageBox()
+        message_box.information(
+            self, f"'{table[0].decode('u8')}' table",
+            "not implemented ..."
+        )
 
     def show_name(self, table):
         data = self.p.parse_name(table)
@@ -174,7 +204,7 @@ class DirectoryWidget(QScrollArea):
         table.setFixedSize(600, 400)
         table.setRowCount(len(data))
         table.setColumnCount(5)
-        for cid, col in enumerate(["platform ID", "encoding ID", "language ID", "name ID", "string"]):
+        for cid, col in enumerate(name_entry._fields):
             table.setHorizontalHeaderItem(cid, QTableWidgetItem(col))
         for rid, row in enumerate(data):
             for cid, col in enumerate(row):
@@ -195,6 +225,27 @@ class DirectoryWidget(QScrollArea):
         table.setColumnCount(1)
         for kid, key in enumerate(head_table._fields):
             table.setVerticalHeaderItem(kid, QTableWidgetItem(key))
+        for vid, val in enumerate(data):
+            table.setItem(vid, 0, QTableWidgetItem(f"{val}"))
+        dialog.exec()
+
+    def show_xhea(self, table):
+        data = self.p.parse_xhea(table)
+        dialog = QDialog()
+        tag = table[0].decode('u8')
+        dialog.setWindowTitle(f"'{tag}' table")
+        dialog.setFixedSize(600, 400)
+        table = QTableWidget(dialog)
+        table.setFixedSize(600, 400)
+        table.setRowCount(len(data))
+        table.setColumnCount(1)
+        for kid, key in enumerate(xhea_table._fields):
+            real_key = key
+            if tag == "vhea":
+                real_key = key
+                for src, dst in xhea_translation.items():
+                    real_key = real_key.replace(src, dst)
+            table.setVerticalHeaderItem(kid, QTableWidgetItem(real_key))
         for vid, val in enumerate(data):
             table.setItem(vid, 0, QTableWidgetItem(f"{val}"))
         dialog.exec()
@@ -225,13 +276,17 @@ class DirectoryWidget(QScrollArea):
                         tag_widget.addItem("%s" % data[1][l])
                 lang_layout.addWidget(tag_widget)
             if s_list:
-                for l_tag, _, l_list in s_list:
+                for l_tag, l_req, l_list in s_list:
+                    print(l_req)
                     lang_layout.addWidget(QLabel(l_tag))
                     tag_widget = QListWidget()
                     tag_widget.setFlow(QListView.LeftToRight)
                     for l in l_list:
                         if l < f_count:
-                            tag_widget.addItem("%s" % data[1][l])
+                            item = QListWidgetItem("%s" % data[1][l])
+                            if l == l_req:
+                                item.setTextColor(QColor.red)
+                            tag_widget.addItem(item)
                     lang_layout.addWidget(tag_widget)
         scroll.setWidget(widget)
         dialog.exec()
